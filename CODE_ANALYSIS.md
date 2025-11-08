@@ -1,46 +1,68 @@
-# Analýza kódu projektu BAFI
+# BAFI Project Code Analysis
 
-## Přehled projektu
+## Project Overview
 
-BAFI je univerzální nástroj pro převod dat mezi různými formáty (JSON, BSON, YAML, CSV, XML, MT940) s podporou šablon a Lua skriptů. Projekt je napsaný v Go 1.23 a nabízí flexibilní způsob transformace dat.
+BAFI is a universal data conversion tool supporting multiple formats (JSON, BSON, YAML, CSV, XML, MT940) with template engine and Lua scripting support. Written in Go 1.23, it provides flexible data transformation capabilities.
 
 ---
 
-## 🔴 KRITICKÉ PROBLÉMY
+## 🔴 CRITICAL ISSUES
 
-### 1. Dělení nulou (functions.go:108, 111)
+### 1. Division by Zero (functions.go:108, 111)
 
-**Lokace:** `functions.go:108, 111`
+**Location:** `functions.go:108, 111`
+
+**Severity:** HIGH - Application Crash (Panic)
+
+**CWE:** [CWE-369: Divide By Zero](https://cwe.mitre.org/data/definitions/369.html)
 
 ```go
 func div(a, b interface{}) int64 { return toInt64(a) / toInt64(b) }
 func mod(a, b interface{}) int64 { return toInt64(a) % toInt64(b) }
 ```
 
-**Problém:** Funkce `div()` a `mod()` neověřují dělení nulou, což způsobí panic aplikace.
+**Problem:** The `div()` and `mod()` functions do not validate division by zero, causing application panic.
 
-**Doporučení:**
+**Impact:**
+- Immediate application crash (panic)
+- Denial of Service vulnerability
+- Template processing failure
+- Data loss in batch operations
+
+**Recommendation:**
 ```go
 func div(a, b interface{}) int64 {
     divisor := toInt64(b)
     if divisor == 0 {
-        return 0 // nebo vrátit error
+        return 0 // or return error
     }
     return toInt64(a) / divisor
 }
 ```
 
-### 2. Dělení nulou ve float operacích (functions.go:139-145)
+**References:**
+- [Go Spec: Integer Operators](https://go.dev/ref/spec#Integer_operators)
+- [OWASP: Improper Input Validation](https://owasp.org/www-community/vulnerabilities/Improper_Input_Validation)
 
-**Lokace:** `functions.go:139-145`
+### 2. Division by Zero in Float Operations (functions.go:139-145)
 
-**Problém:** Funkce `divf()` také neověřuje dělení nulou.
+**Location:** `functions.go:139-145`
 
-**Doporučení:** Přidat kontrolu nulového dělitele před operací.
+**Severity:** HIGH - Application Crash
 
-### 3. Race condition s globální Lua state (main.go:31-32)
+**CWE:** [CWE-369: Divide By Zero](https://cwe.mitre.org/data/definitions/369.html)
 
-**Lokace:** `main.go:31-32`
+**Problem:** The `divf()` function also lacks zero divisor validation.
+
+**Recommendation:** Add zero divisor check before division operation.
+
+### 3. Race Condition with Global Lua State (main.go:31-32)
+
+**Location:** `main.go:31-32`
+
+**Severity:** HIGH - Data Corruption / Crash
+
+**CWE:** [CWE-362: Concurrent Execution using Shared Resource](https://cwe.mitre.org/data/definitions/362.html)
 
 ```go
 var (
@@ -48,64 +70,384 @@ var (
 )
 ```
 
-**Problém:** Globální proměnná `luaData` není thread-safe. Při paralelním zpracování více requestů může dojít k race conditions.
+**Problem:** Global `luaData` variable is not thread-safe. Concurrent request processing can lead to race conditions.
 
-**Doporučení:**
-- Použít sync.Pool pro Lua states
-- Nebo vytvořit nový LState pro každý request
-- Přidat mutex pro synchronizaci přístupu
+**Impact:**
+- Data corruption
+- Unpredictable results
+- Application crashes
+- Security implications (possible information disclosure)
 
----
+**Recommendation:**
+- Use `sync.Pool` for Lua states
+- Or create new LState for each request
+- Add mutex for synchronized access
 
-## 🟠 BEZPEČNOSTNÍ PROBLÉMY
-
-### 4. ChatGPT API klíč v CLI parametrech
-
-**Lokace:** `main.go:70`
-
-**Problém:** API klíč je předáván jako parametr příkazové řádky (-gk), což znamená:
-- Je viditelný v historii příkazů
-- Je viditelný v process listu (ps aux)
-- Může být zalogován v různých systémech
-
-**Doporučení:**
-- Číst klíč z environment variable (OPENAI_API_KEY)
-- Číst z konfiguračního souboru s příslušnými právy (600)
-- Použít secrets management systém
-
-### 5. XML External Entity (XXE) injection
-
-**Lokace:** `main.go:286-289`
-
-**Problém:** XML parser neomezuje external entity, což může vést k XXE útokům.
-
-**Doporučení:** Použít bezpečnější konfiguraci XML parseru s vypnutými external entities.
-
-### 6. Chybějící validace vstupních souborů
-
-**Problém:** Aplikace nečte soubory s ověřením velikosti, což může vést k DoS útokům načtením velmi velkých souborů.
-
-**Doporučení:** Přidat limit na velikost vstupního souboru (např. 100MB).
-
----
-
-## 🟡 DEPRECATED A ZASTARALÉ FUNKCE
-
-### 7. Deprecated rand.Seed (main.go:48)
-
-**Lokace:** `main.go:48`
-
-```go
-func init() {
-    rand.Seed(time.Now().UTC().UnixNano())
+**Detection:**
+```bash
+go test -race ./...
 ```
 
-**Problém:** `rand.Seed()` je deprecated od Go 1.20. Go nyní automaticky inicializuje random seed.
+**References:**
+- [Go Data Race Detector](https://go.dev/doc/articles/race_detector)
+- [CWE-362: Race Condition](https://cwe.mitre.org/data/definitions/362.html)
+- [OWASP: Race Conditions](https://owasp.org/www-community/vulnerabilities/Race_Conditions)
 
-**Doporučení:**
+---
+
+## 🟠 SECURITY VULNERABILITIES
+
+### 4. API Key Exposure via Command-Line Arguments
+
+**Location:** `main.go:70`
+
+**Severity:** HIGH - Credential Exposure
+
+**CWE:** [CWE-214: Invocation of Process Using Visible Sensitive Information](https://cwe.mitre.org/data/definitions/214.html)
+
+**OWASP:** [A07:2021 – Identification and Authentication Failures](https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/)
+
+**Problem:** API key is passed as CLI parameter (-gk), which means:
+- Visible in command history (`~/.bash_history`, `~/.zsh_history`)
+- Visible in process list (`ps aux`, `top`)
+- May be logged in various systems (shell logs, audit logs, monitoring)
+- Accessible to other users on the system
+- Stored in crash dumps and core files
+
+**Attack Scenario:**
+```bash
+# Attacker can see the key in process list
+$ ps aux | grep bafi
+user  1234  bafi -gk sk-proj-xxxxxxxxxxxxx -gq "query"
+
+# Or in history
+$ history | grep bafi
+1234 bafi -gk sk-proj-xxxxxxxxxxxxx ...
+
+# Or via /proc filesystem
+$ cat /proc/1234/cmdline
+```
+
+**Recommendation:**
+1. **Environment Variables (Preferred)**
+```bash
+export OPENAI_API_KEY=sk-proj-xxxxx
+bafi -gq "query"
+```
+
+2. **Configuration File with Proper Permissions**
+```bash
+# ~/.bafi/config.yaml (chmod 600)
+openai:
+  api_key: sk-proj-xxxxx
+```
+
+3. **Secrets Management System**
+- HashiCorp Vault
+- AWS Secrets Manager
+- Azure Key Vault
+- Google Cloud Secret Manager
+
+**References:**
+- [OWASP Secrets Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)
+- [CWE-214: Process Visible Information](https://cwe.mitre.org/data/definitions/214.html)
+- [CWE-522: Insufficiently Protected Credentials](https://cwe.mitre.org/data/definitions/522.html)
+- [12-Factor App: Config](https://12factor.net/config)
+- [NIST SP 800-57: Key Management](https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final)
+
+### 5. XML External Entity (XXE) Injection
+
+**Location:** `main.go:286-289`
+
+**Severity:** CRITICAL - Remote Code Execution / Data Exfiltration
+
+**CWE:** [CWE-611: Improper Restriction of XML External Entity Reference](https://cwe.mitre.org/data/definitions/611.html)
+
+**CVE Examples:**
+- [CVE-2021-44228 (Log4Shell)](https://nvd.nist.gov/vuln/detail/CVE-2021-44228) - Similar entity expansion issue
+- [CVE-2019-12415](https://nvd.nist.gov/vuln/detail/CVE-2019-12415) - XXE in XML parsing
+
+**OWASP:** [A05:2021 – Security Misconfiguration](https://owasp.org/Top10/A05_2021-Security_Misconfiguration/)
+
+**Problem:** XML parser (`mxj.NewMapXml`) does not restrict external entities, enabling XXE attacks.
+
+**Attack Scenarios:**
+
+1. **File Disclosure:**
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<data>&xxe;</data>
+```
+
+2. **SSRF (Server-Side Request Forgery):**
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "http://internal-server/admin">
+]>
+<data>&xxe;</data>
+```
+
+3. **Denial of Service (Billion Laughs):**
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+  <!ENTITY lol4 "&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;">
+]>
+<data>&lol4;</data>
+```
+
+**Current Code:**
+```go
+case "xml":
+    mapData, err := mxj.NewMapXml(data)  // VULNERABLE
+```
+
+**Secure Implementation:**
+```go
+import (
+    "encoding/xml"
+    "io"
+)
+
+case "xml":
+    decoder := xml.NewDecoder(bytes.NewReader(data))
+
+    // Disable external entity processing
+    decoder.Strict = true
+    decoder.Entity = xml.HTMLEntity
+
+    // Or use a custom decoder with entity restrictions
+    // See: https://pkg.go.dev/encoding/xml#Decoder
+
+    var result interface{}
+    if err := decoder.Decode(&result); err != nil {
+        return nil, fmt.Errorf("mapXML: %s", err.Error())
+    }
+    return result, nil
+```
+
+**Testing for XXE:**
+```bash
+# Test with malicious XML
+cat > xxe_test.xml <<EOF
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<data>&xxe;</data>
+EOF
+
+./bafi -i xxe_test.xml -t "?{{toJSON .}}"
+```
+
+**References:**
+- [OWASP XXE Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html)
+- [CWE-611: XXE](https://cwe.mitre.org/data/definitions/611.html)
+- [PortSwigger: XXE Attacks](https://portswigger.net/web-security/xxe)
+- [OWASP Testing Guide: XXE](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/07-Testing_for_XML_Injection)
+- [XML Bomb Prevention](https://en.wikipedia.org/wiki/Billion_laughs_attack)
+
+### 6. Missing Input File Size Validation (DoS)
+
+**Severity:** MEDIUM - Denial of Service
+
+**CWE:** [CWE-400: Uncontrolled Resource Consumption](https://cwe.mitre.org/data/definitions/400.html)
+
+**OWASP:** [A04:2021 – Insecure Design](https://owasp.org/Top10/A04_2021-Insecure_Design/)
+
+**Problem:** Application reads files without size validation, enabling DoS attacks via large files.
+
+**Attack Scenario:**
+```bash
+# Create 10GB file
+dd if=/dev/zero of=large.json bs=1M count=10240
+
+# Attack the application
+./bafi -i large.json -t template.tmpl -o output.txt
+# Result: Memory exhaustion, OOM killer, application crash
+```
+
+**Impact:**
+- Memory exhaustion
+- System instability
+- OOM (Out of Memory) killer activation
+- Service unavailability
+- Resource exhaustion for other processes
+
+**Current Vulnerable Code:**
+```go
+func getInputData(input *string) (data []byte, files []map[string]interface{}, errorMsg error) {
+    // ...
+    if data, err = os.ReadFile(inputFile); err != nil {  // NO SIZE CHECK
+        return nil, nil, fmt.Errorf("readFile: %s", err.Error())
+    }
+    // ...
+}
+```
+
+**Secure Implementation:**
+```go
+const MaxFileSize = 100 * 1024 * 1024 // 100 MB
+
+func getInputData(input *string) (data []byte, files []map[string]interface{}, errorMsg error) {
+    // ...
+
+    // Check file size before reading
+    fileInfo, err := os.Stat(inputFile)
+    if err != nil {
+        return nil, nil, fmt.Errorf("stat file: %s", err.Error())
+    }
+
+    if fileInfo.Size() > MaxFileSize {
+        return nil, nil, fmt.Errorf("file too large: %d bytes (max: %d bytes)",
+            fileInfo.Size(), MaxFileSize)
+    }
+
+    if data, err = os.ReadFile(inputFile); err != nil {
+        return nil, nil, fmt.Errorf("readFile: %s", err.Error())
+    }
+    // ...
+}
+```
+
+**Additional Protections:**
+```go
+// For streaming large files
+func readLargeFileSafely(path string, maxSize int64) ([]byte, error) {
+    file, err := os.Open(path)
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close()
+
+    // Create limited reader
+    lr := &io.LimitedReader{R: file, N: maxSize + 1}
+
+    data, err := io.ReadAll(lr)
+    if err != nil {
+        return nil, err
+    }
+
+    if int64(len(data)) > maxSize {
+        return nil, fmt.Errorf("file exceeds maximum size")
+    }
+
+    return data, nil
+}
+```
+
+**References:**
+- [CWE-400: Resource Consumption](https://cwe.mitre.org/data/definitions/400.html)
+- [OWASP: Denial of Service](https://owasp.org/www-community/attacks/Denial_of_Service)
+- [Go: Reading Large Files](https://go.dev/blog/io2010)
+- [NIST: Resource Management](https://csrc.nist.gov/glossary/term/resource_management)
+
+### 7. Lack of Request Timeout (DoS)
+
+**Severity:** MEDIUM - Denial of Service
+
+**CWE:** [CWE-400: Uncontrolled Resource Consumption](https://cwe.mitre.org/data/definitions/400.html)
+
+**Problem:** ChatGPT requests and long-running operations lack timeouts.
+
+**Current Vulnerable Code:**
+```go
+func chatGPTprocess(mapData interface{}, params tParams) (response openai.ChatCompletionResponse, err error) {
+    client := openai.NewClient(*params.chatGPTkey)
+    return client.CreateChatCompletion(
+        context.Background(),  // NO TIMEOUT
+        openai.ChatCompletionRequest{
+            // ...
+        },
+    )
+}
+```
+
+**Secure Implementation:**
+```go
+import (
+    "context"
+    "time"
+)
+
+const DefaultTimeout = 30 * time.Second
+
+func chatGPTprocess(mapData interface{}, params tParams) (response openai.ChatCompletionResponse, err error) {
+    // Create context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+    defer cancel()
+
+    client := openai.NewClient(*params.chatGPTkey)
+    return client.CreateChatCompletion(
+        ctx,  // WITH TIMEOUT
+        openai.ChatCompletionRequest{
+            // ...
+        },
+    )
+}
+```
+
+**References:**
+- [Go Context Package](https://pkg.go.dev/context)
+- [Timeouts and Cancellation](https://go.dev/blog/context)
+- [CWE-400](https://cwe.mitre.org/data/definitions/400.html)
+
+### 8. Template Injection Risk
+
+**Severity:** MEDIUM - Code Execution
+
+**CWE:** [CWE-94: Improper Control of Generation of Code](https://cwe.mitre.org/data/definitions/94.html)
+
+**OWASP:** [Server-Side Template Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/18-Testing_for_Server-side_Template_Injection)
+
+**Problem:** User-controlled template content with powerful functions (Lua execution, file operations).
+
+**Attack Scenario:**
+```bash
+# Malicious inline template
+./bafi -i data.json -t '?{{lua "os.execute" "rm -rf /"}}' -o output.txt
+```
+
+**Mitigation:**
+1. Sanitize template input
+2. Restrict available template functions
+3. Run templates in sandbox
+4. Validate template before execution
+
+**References:**
+- [OWASP: Template Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/18-Testing_for_Server-side_Template_Injection)
+- [CWE-94: Code Injection](https://cwe.mitre.org/data/definitions/94.html)
+- [PortSwigger: SSTI](https://portswigger.net/web-security/server-side-template-injection)
+
+---
+
+## 🟡 DEPRECATED FUNCTIONS
+
+### 9. Deprecated rand.Seed (main.go:48)
+
+**Location:** `main.go:48`
+
+**Severity:** LOW - Code Quality
+
 ```go
 func init() {
-    // rand.Seed není potřeba od Go 1.20+
+    rand.Seed(time.Now().UTC().UnixNano())  // DEPRECATED since Go 1.20
+```
+
+**Problem:** `rand.Seed()` is deprecated since Go 1.20. Go now automatically initializes random seed.
+
+**Recommendation:**
+```go
+func init() {
+    // rand.Seed not needed in Go 1.20+
+    // Random is automatically seeded
     if _, err := os.Stat("./lua/functions.lua"); !os.IsNotExist(err) {
         luaData = lua.NewState()
         if err := luaData.DoFile("./lua/functions.lua"); err != nil {
@@ -115,7 +457,7 @@ func init() {
 }
 ```
 
-Pro funkci `randInt`, pokud je potřeba lepší randomness:
+For `randInt` function (Go 1.22+):
 ```go
 func randInt(min, max int) int {
     if max <= min {
@@ -125,55 +467,59 @@ func randInt(min, max int) int {
 }
 ```
 
+**References:**
+- [Go 1.20 Release Notes](https://go.dev/doc/go1.20)
+- [math/rand Documentation](https://pkg.go.dev/math/rand)
+
 ---
 
-## 🟢 LOGICKÉ CHYBY A EDGE CASES
+## 🟢 LOGICAL ERRORS AND EDGE CASES
 
-### 8. CSV s pouze hlavičkou (main.go:274)
+### 10. CSV with Header Only (main.go:274)
 
-**Lokace:** `main.go:274`
+**Location:** `main.go:274`
 
 ```go
 mapData = make([]map[string]interface{}, len(lines[1:]))
 ```
 
-**Problém:** Pokud CSV má pouze hlavičku (1 řádek), `lines[1:]` je prázdné pole, ale to už je částečně ošetřeno kontrolou na řádku 271-273.
+**Problem:** If CSV has only header (1 line), `lines[1:]` is empty, partially handled by check on line 271-273.
 
-**Doporučení:** Přidat jasnější chybovou hlášku:
+**Recommendation:**
 ```go
 if len(lines) < 2 {
     return nil, fmt.Errorf("mapCSV: CSV has no data rows (only header)")
 }
 ```
 
-### 9. mustArray vrací nil (functions.go:498-500)
+### 11. mustArray Returns nil (functions.go:498-500)
 
-**Lokace:** `functions.go:498-500`
+**Location:** `functions.go:498-500`
 
 ```go
 func mustArray(v interface{}) []interface{} {
     if v == nil {
-        return nil
+        return nil  // PROBLEM: returns nil instead of empty slice
     }
 ```
 
-**Problém:** Vrací nil místo prázdného pole, což může způsobit panic při iteraci v šablonách.
+**Problem:** Returns nil instead of empty slice, can cause panic during template iteration.
 
-**Doporučení:**
+**Recommendation:**
 ```go
 func mustArray(v interface{}) []interface{} {
     if v == nil {
-        return []interface{}{} // prázdné pole místo nil
+        return []interface{}{}  // return empty slice instead of nil
     }
 ```
 
-### 10. addSubstring index out of range (functions.go:324-337)
+### 12. addSubstring Index Out of Range (functions.go:324-337)
 
-**Lokace:** `functions.go:324-337`
+**Location:** `functions.go:324-337`
 
-**Problém:** Funkce má špatnou logiku kontroly indexu. Na řádku 334 používá `s[:-x]`, což není validní Go syntax.
+**Problem:** Function has invalid index logic. Line 334 uses `s[:-x]` which is not valid Go syntax.
 
-**Doporučení:** Opravit logiku:
+**Recommendation:** Fix logic:
 ```go
 func addSubstring(s string, ss string, pos interface{}) string {
     p := toInt(pos)
@@ -199,20 +545,20 @@ func addSubstring(s string, ss string, pos interface{}) string {
 }
 ```
 
-### 11. Chybějící kontrola prázdného template (main.go:320)
+### 13. Missing Empty Template Check (main.go:320)
 
-**Lokace:** `main.go:320-331`
+**Location:** `main.go:320-331`
 
 ```go
 func readTemplate(textTemplate string) ([]byte, error) {
     var templateFile []byte
     var err error
-    if textTemplate[:1] == "?" {
+    if textTemplate[:1] == "?" {  // PANIC if empty string
 ```
 
-**Problém:** Pokud `textTemplate` je prázdný string, dojde k panic při `textTemplate[:1]`.
+**Problem:** If `textTemplate` is empty string, panic occurs at `textTemplate[:1]`.
 
-**Doporučení:**
+**Recommendation:**
 ```go
 func readTemplate(textTemplate string) ([]byte, error) {
     if textTemplate == "" {
@@ -223,245 +569,195 @@ func readTemplate(textTemplate string) ([]byte, error) {
 
 ---
 
-## 💡 NÁVRHY NA VYLEPŠENÍ
+## 💡 IMPROVEMENT SUGGESTIONS
 
-### A. Obecná vylepšení kódu
+### A. General Code Improvements
 
-1. **Přidat kontextové timeout**
-   - ChatGPT requesty nemají timeout
-   - Dlouhodobé operace mohou zabloknout aplikaci
-   - Doporučení: použít `context.WithTimeout()`
+1. **Add Contextual Timeouts**
+   - ChatGPT requests lack timeout
+   - Long operations can block application
+   - Recommendation: use `context.WithTimeout()`
 
-2. **Lepší error handling**
-   - Template funkce vracejí errory jako stringy
-   - Doporučení: použít vlastní error typy nebo standardní Go error handling
+2. **Better Error Handling**
+   - Template functions return errors as strings
+   - Recommendation: use custom error types or standard Go error handling
 
-3. **Přidat logging**
-   - Aplikace používá pouze `log.Fatal()`
-   - Doporučení: přidat strukturovaný logging (např. zap, logrus)
-   - Přidat debug mode s verbose výstupem
+3. **Add Logging**
+   - Application only uses `log.Fatal()`
+   - Recommendation: add structured logging (e.g., zap, logrus)
+   - Add debug mode with verbose output
 
-4. **Konfigurace pomocí souboru**
-   - Všechny parametry jsou CLI
-   - Doporučení: přidat podporu konfiguračního souboru (YAML/JSON)
+4. **Configuration File Support**
+   - All parameters are CLI-based
+   - Recommendation: add configuration file support (YAML/JSON)
 
-5. **Validace vstupních formátů**
-   - Lepší detekce formátu podle obsahu, ne jen podle extension
-   - Přidat magic number detection
+5. **Input Format Validation**
+   - Better format detection based on content, not just extension
+   - Add magic number detection
 
-### B. Vylepšení architektury
+### B. Architecture Improvements
 
-1. **Separace concerns**
-   - Rozdělit main.go na více modulů:
-     - `parser/` - parsování různých formátů
-     - `converter/` - konverze mezi formáty
+1. **Separation of Concerns**
+   - Split main.go into modules:
+     - `parser/` - parsing different formats
+     - `converter/` - conversion between formats
      - `template/` - template engine wrapping
      - `lua/` - Lua integration
      - `chatgpt/` - ChatGPT integration
 
-2. **Interface-based design**
-   - Vytvořit interface pro různé parsery
-   - Snadnější přidávání nových formátů
+2. **Interface-Based Design**
+   - Create interfaces for different parsers
+   - Easier addition of new formats
 
-3. **Plugin systém**
-   - Možnost přidávat vlastní formáty jako pluginy
-   - Rozšíření Lua funkcí bez recompilace
+3. **Plugin System**
+   - Ability to add custom formats as plugins
+   - Extend Lua functions without recompilation
 
-### C. Performance optimalizace
+### C. Performance Optimization
 
-1. **Streaming pro velké soubory**
-   - Aktuálně se celý soubor načítá do paměti
-   - Pro velké CSV/JSON přidat streaming parser
+1. **Streaming for Large Files**
+   - Currently entire file is loaded into memory
+   - For large CSV/JSON add streaming parser
 
-2. **Paralelní zpracování**
-   - Při zpracování více souborů (filesTest.yaml) použít goroutines
+2. **Parallel Processing**
+   - When processing multiple files (filesTest.yaml) use goroutines
 
-3. **Memory pooling**
-   - Použít sync.Pool pro často alokované objekty
-   - Redukce GC pressure
+3. **Memory Pooling**
+   - Use sync.Pool for frequently allocated objects
+   - Reduce GC pressure
 
-### D. Testování a kvalita
+### D. Testing and Quality
 
-1. **Zvýšit code coverage**
-   - Aktuální coverage není 100%
-   - Přidat edge case testy
+1. **Increase Code Coverage**
+   - Current coverage is not 100%
+   - Add edge case tests
 
-2. **Benchmark testy**
-   - Přidat benchmarky pro kritické funkce
-   - Měřit performance regrese
+2. **Benchmark Tests**
+   - Add benchmarks for critical functions
+   - Measure performance regressions
 
-3. **Integration testy**
-   - Testy end-to-end scenářů
-   - Testování s reálnými daty
+3. **Integration Tests**
+   - End-to-end scenario tests
+   - Testing with real data
 
-4. **Fuzz testing**
+4. **Fuzz Testing**
    - Go 1.18+ native fuzzing
-   - Testování s náhodnými vstupy
+   - Testing with random inputs
 
 ---
 
-## 🚀 NÁVRHY NA ROZŠÍŘENÍ PROJEKTU
+## 🚀 PROJECT EXTENSION PROPOSALS
 
-### 1. Nové formáty
+### 1. New Formats
 
-- **Parquet** - populární pro big data
-- **Avro** - používaný v Kafka ekosystému
+- **Parquet** - popular for big data
+- **Avro** - used in Kafka ecosystem
 - **Protocol Buffers** - Google's serialization format
 - **MessagePack** - binary JSON
-- **TOML** - konfigurační formát
-- **INI** - starší konfigurační formát
-- **Excel (XLSX)** - čtení/zápis Excel souborů
-- **EDI** - Electronic Data Interchange formáty
+- **TOML** - configuration format
+- **INI** - legacy configuration format
+- **Excel (XLSX)** - read/write Excel files
+- **EDI** - Electronic Data Interchange formats
 
-### 2. Pokročilé funkce
+### 2. Advanced Features
 
-#### a) Incremental processing
+#### a) Incremental Processing
 ```bash
-# Watch mode - automatické zpracování při změně souboru
+# Watch mode - automatic processing on file change
 bafi watch -i input.json -t template.tmpl -o output.txt
 ```
 
-#### b) HTTP server mode
+#### b) HTTP Server Mode
 ```bash
-# REST API pro transformace
+# REST API for transformations
 bafi serve -p 8080
 curl -X POST http://localhost:8080/transform \
   -H "Content-Type: application/json" \
   -d @input.json
 ```
 
-#### c) Batch processing
+#### c) Batch Processing
 ```bash
-# Zpracování celého adresáře
+# Process entire directory
 bafi batch -i ./data/*.json -t template.tmpl -o ./output/
 ```
 
-#### d) Data validace
+#### d) Data Validation
 ```bash
-# Validace podle JSON Schema / XML Schema
+# Validate against JSON Schema / XML Schema
 bafi validate -i data.json -s schema.json
 ```
 
-### 3. Integrace s dalšími službami
+### 3. Integration with Services
 
 - **Database export/import** - PostgreSQL, MySQL, MongoDB
 - **Cloud storage** - S3, GCS, Azure Blob
 - **Message queues** - Kafka, RabbitMQ, NATS
-- **Webhooks** - odesílání výsledků na HTTP endpoint
+- **Webhooks** - send results to HTTP endpoint
 
-### 4. Vylepšení ChatGPT integrace
+### 4. Enhanced ChatGPT Integration
 
-- **Streaming odpovědí** - real-time výstup
-- **Custom prompts** - vlastní prompt templates
-- **Token counting** - odhad nákladů před requestem
-- **Caching** - cache častých queries
+- **Streaming responses** - real-time output
+- **Custom prompts** - custom prompt templates
+- **Token counting** - cost estimation before request
+- **Caching** - cache frequent queries
 - **Multiple AI providers** - Claude, Gemini, Llama
 
-### 5. Template rozšíření
+### 5. Template Extensions
 
-- **Template inheritance** - podpora pro base templates
-- **Macro systém** - opakovaně použitelné template bloky
-- **Custom filters** - uživatelské filtry v šablonách
-- **Template debugging** - lepší error messages
-
-### 6. CLI vylepšení
-
-```bash
-# Interactive mode
-bafi interactive
-
-# Diff mode - porovnání výstupů
-bafi diff -i1 file1.json -i2 file2.json
-
-# Merge mode - sloučení více zdrojů
-bafi merge -i file1.json,file2.yaml -o merged.json
-
-# Schema generation
-bafi schema generate -i data.json -o schema.json
-```
-
-### 7. GUI aplikace
-
-- Desktop aplikace (Electron nebo native Go GUI)
-- Web UI pro transformace
-- Visual template editor
-- Live preview transformací
-
-### 8. Bezpečnostní features
-
-- **Encryption** - šifrování vstupních/výstupních souborů
-- **Signature verification** - ověření integrity dat
-- **Audit log** - logování všech operací
-- **Access control** - řízení přístupu k funkcím
-
-### 9. Monitoring a observability
-
-- **Prometheus metrics** - exportování metrik
-- **Health check endpoint** - pro kubernetes/docker
-- **Distributed tracing** - OpenTelemetry integrace
-- **Performance profiling** - built-in pprof server
-
-### 10. Developer experience
-
-- **VS Code extension** - syntax highlighting pro templates
-- **Playground** - webová aplikace pro testování
-- **Library mode** - použití jako Go library
-```go
-import "github.com/mmalcek/bafi/pkg/converter"
-
-result, err := converter.Convert(data, converter.Options{
-    InputFormat: "json",
-    OutputFormat: "xml",
-    Template: template,
-})
-```
+- **Template inheritance** - support for base templates
+- **Macro system** - reusable template blocks
+- **Custom filters** - user-defined filters in templates
+- **Template debugging** - better error messages
 
 ---
 
-## 📊 PRIORITY IMPLEMENTACE
+## 📊 IMPLEMENTATION PRIORITIES
 
-### HIGH PRIORITY (kritické opravy)
-1. ✅ Opravit dělení nulou
-2. ✅ Odstranit deprecated rand.Seed
-3. ✅ Opravit race condition s Lua state
-4. ✅ Zabezpečit ChatGPT API klíč
-5. ✅ Opravit addSubstring bug
+### HIGH PRIORITY (critical fixes)
+1. ✅ Fix division by zero
+2. ✅ Remove deprecated rand.Seed
+3. ✅ Fix race condition with Lua state
+4. ✅ Secure ChatGPT API key
+5. ✅ Fix addSubstring bug
 
-### MEDIUM PRIORITY (důležitá vylepšení)
-1. Přidat konfigurace přes environment variables
-2. Lepší error handling a logging
-3. Zvýšit test coverage
-4. Přidat validaci velikosti vstupních souborů
-5. Implementovat timeout pro dlouhé operace
+### MEDIUM PRIORITY (important improvements)
+1. Add configuration via environment variables
+2. Better error handling and logging
+3. Increase test coverage
+4. Add input file size validation
+5. Implement timeout for long operations
 
 ### LOW PRIORITY (nice-to-have)
 1. HTTP server mode
-2. Nové formáty (Parquet, Avro)
-3. GUI aplikace
-4. Cloud storage integrace
-5. Monitoring a metrics
+2. New formats (Parquet, Avro)
+3. GUI application
+4. Cloud storage integration
+5. Monitoring and metrics
 
 ---
 
-## 🔧 DOPORUČENÉ NÁSTROJE PRO DEVELOPMENT
+## 🔧 RECOMMENDED DEVELOPMENT TOOLS
 
-1. **Linting a static analysis**
+1. **Linting and Static Analysis**
    ```bash
    go install honnef.co/go/tools/cmd/staticcheck@latest
    go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
    ```
 
-2. **Security scanning**
+2. **Security Scanning**
    ```bash
    go install github.com/securego/gosec/v2/cmd/gosec@latest
-   ```
-
-3. **Dependency checking**
-   ```bash
    go install golang.org/x/vuln/cmd/govulncheck@latest
    ```
 
-4. **Code coverage**
+3. **Dependency Checking**
+   ```bash
+   go mod verify
+   go mod tidy
+   ```
+
+4. **Code Coverage**
    ```bash
    go test -coverprofile=coverage.out ./...
    go tool cover -html=coverage.out
@@ -469,14 +765,54 @@ result, err := converter.Convert(data, converter.Options{
 
 ---
 
-## 📝 ZÁVĚR
+## 📚 SECURITY RESOURCES
 
-BAFI je solidní nástroj s dobrou funkcionalitou. Hlavní oblasti pro zlepšení jsou:
+### General Security
+- [OWASP Top 10](https://owasp.org/www-project-top-ten/)
+- [CWE Top 25](https://cwe.mitre.org/top25/archive/2023/2023_top25_list.html)
+- [SANS Top 25](https://www.sans.org/top25-software-errors/)
 
-1. **Bezpečnost** - oprava kritických bugů (dělení nulou, race conditions)
-2. **Bezpečnost dat** - lepší handling API klíčů a validace vstupů
-3. **Modernizace** - odstranění deprecated funkcí
-4. **Rozšiřitelnost** - lepší architektura pro přidávání nových formátů
-5. **Developer experience** - lepší dokumentace, tooling, testing
+### Go Security
+- [Go Security Policy](https://go.dev/security/policy)
+- [Go Vulnerability Database](https://pkg.go.dev/vuln/)
+- [Secure Coding in Go](https://github.com/OWASP/Go-SCP)
+- [Awesome Go Security](https://github.com/guardrailsio/awesome-golang-security)
 
-Projekt má velký potenciál a s implementací navržených vylepšení by se mohl stát ještě užitečnějším nástrojem pro data transformace.
+### Tools
+- [gosec](https://github.com/securego/gosec)
+- [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)
+- [nancy](https://github.com/sonatype-nexus-community/nancy)
+- [trivy](https://github.com/aquasecurity/trivy)
+
+---
+
+## 📝 CONCLUSION
+
+BAFI is a solid tool with good functionality. Main areas for improvement:
+
+1. **Security** - fix critical bugs (division by zero, race conditions)
+2. **Data Security** - better handling of API keys and input validation
+3. **Modernization** - remove deprecated functions
+4. **Extensibility** - better architecture for adding new formats
+5. **Developer Experience** - better documentation, tooling, testing
+
+The project has great potential and with implementation of suggested improvements could become an even more valuable data transformation tool.
+
+---
+
+## 📖 REFERENCES
+
+### Standards and Best Practices
+- [OWASP Application Security Verification Standard](https://owasp.org/www-project-application-security-verification-standard/)
+- [NIST Secure Software Development Framework](https://csrc.nist.gov/Projects/ssdf)
+- [CIS Controls](https://www.cisecurity.org/controls)
+
+### Go Documentation
+- [Effective Go](https://go.dev/doc/effective_go)
+- [Go Code Review Comments](https://github.com/golang/go/wiki/CodeReviewComments)
+- [Go Security Best Practices](https://go.dev/doc/security/best-practices)
+
+### Vulnerability Databases
+- [National Vulnerability Database](https://nvd.nist.gov/)
+- [CVE Details](https://www.cvedetails.com/)
+- [GitHub Advisory Database](https://github.com/advisories)

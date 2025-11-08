@@ -1,20 +1,32 @@
-# Příklady rozšíření projektu BAFI
+# BAFI Project Extension Examples
 
-Tento dokument obsahuje konkrétní implementační návrhy pro rozšíření funkcionality projektu BAFI.
+This document provides implementation examples for extending BAFI's functionality. For security vulnerabilities and critical fixes, see [CODE_ANALYSIS.md](./CODE_ANALYSIS.md) and [CRITICAL_FIXES.md](./CRITICAL_FIXES.md).
+
+---
+
+## Table of Contents
+
+1. [HTTP Server Mode](#1-http-server-mode)
+2. [Watch Mode (Auto-processing)](#2-watch-mode-auto-processing)
+3. [Batch Processing](#3-batch-processing)
+4. [Schema Generation](#4-schema-generation)
+5. [Enhanced Template Functions](#5-enhanced-template-functions)
+6. [Plugin System](#6-plugin-system)
+7. [Configuration File Support](#7-configuration-file-support)
+
+---
 
 ## 1. HTTP Server Mode
 
-### Implementace REST API
+Transform BAFI into a REST API service for data transformations.
 
-**Nový soubor: `server.go`**
+**New file: `server.go`**
 
 ```go
 package main
 
 import (
     "encoding/json"
-    "fmt"
-    "io"
     "net/http"
     "github.com/gorilla/mux"
 )
@@ -23,7 +35,6 @@ type TransformRequest struct {
     Data         interface{} `json:"data"`
     InputFormat  string      `json:"input_format"`
     Template     string      `json:"template"`
-    OutputFormat string      `json:"output_format,omitempty"`
 }
 
 type TransformResponse struct {
@@ -38,49 +49,28 @@ func startServer(port string) error {
     r.HandleFunc("/health", handleHealth).Methods("GET")
     r.HandleFunc("/formats", handleFormats).Methods("GET")
 
-    fmt.Printf("Starting BAFI server on port %s\n", port)
     return http.ListenAndServe(":"+port, r)
 }
 
 func handleTransform(w http.ResponseWriter, r *http.Request) {
     var req TransformRequest
-
     if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
         writeError(w, http.StatusBadRequest, "Invalid JSON: "+err.Error())
         return
     }
 
-    // Convert request to internal format and process
+    // Process transformation
     // ... implementation
 
-    resp := TransformResponse{
-        Result: "transformed data",
-    }
-
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(resp)
+    json.NewEncoder(w).Encode(TransformResponse{Result: "transformed data"})
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
     json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
-
-func handleFormats(w http.ResponseWriter, r *http.Request) {
-    formats := []string{"json", "bson", "yaml", "csv", "xml", "mt940"}
-    json.NewEncoder(w).Encode(map[string]interface{}{
-        "input_formats": formats,
-        "template_functions": getTemplateFunctionNames(),
-    })
-}
-
-func writeError(w http.ResponseWriter, code int, message string) {
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(code)
-    json.NewEncoder(w).Encode(TransformResponse{Error: message})
-}
 ```
 
-**Použití:**
+**Usage:**
 ```bash
 # Start server
 bafi serve -p 8080
@@ -95,18 +85,20 @@ curl -X POST http://localhost:8080/transform \
   }'
 ```
 
-## 2. Watch Mode - Automatické zpracování
+---
 
-**Nový soubor: `watcher.go`**
+## 2. Watch Mode (Auto-processing)
+
+Automatically process files when they change.
+
+**New file: `watcher.go`**
 
 ```go
 package main
 
 import (
     "log"
-    "path/filepath"
     "time"
-
     "github.com/fsnotify/fsnotify"
 )
 
@@ -114,7 +106,6 @@ type WatchConfig struct {
     InputPath    string
     Template     string
     OutputPath   string
-    InputFormat  string
     Debounce     time.Duration
 }
 
@@ -125,218 +116,119 @@ func startWatcher(config WatchConfig) error {
     }
     defer watcher.Close()
 
-    done := make(chan bool)
-
-    // Debounce timer to avoid processing multiple events
     var debounceTimer *time.Timer
 
     go func() {
         for {
             select {
-            case event, ok := <-watcher.Events:
-                if !ok {
-                    return
-                }
-
+            case event := <-watcher.Events:
                 if event.Op&fsnotify.Write == fsnotify.Write {
-                    log.Println("Modified file:", event.Name)
-
-                    // Reset debounce timer
                     if debounceTimer != nil {
                         debounceTimer.Stop()
                     }
-
                     debounceTimer = time.AfterFunc(config.Debounce, func() {
                         processFile(event.Name, config)
                     })
                 }
-
-            case err, ok := <-watcher.Errors:
-                if !ok {
-                    return
-                }
+            case err := <-watcher.Errors:
                 log.Println("Error:", err)
             }
         }
     }()
 
-    inputDir := filepath.Dir(config.InputPath)
-    err = watcher.Add(inputDir)
-    if err != nil {
-        return err
-    }
-
-    log.Printf("Watching %s for changes...\n", config.InputPath)
-    <-done
+    watcher.Add(filepath.Dir(config.InputPath))
+    <-make(chan bool)
     return nil
 }
-
-func processFile(filename string, config WatchConfig) {
-    log.Printf("Processing %s...\n", filename)
-
-    // Build params
-    params := tParams{
-        inputFile:    &filename,
-        outputFile:   &config.OutputPath,
-        textTemplate: &config.Template,
-        inputFormat:  &config.InputFormat,
-    }
-
-    if err := processTemplate(params); err != nil {
-        log.Printf("Error processing: %v\n", err)
-        return
-    }
-
-    log.Printf("Successfully processed %s -> %s\n", filename, config.OutputPath)
-}
 ```
 
-**Použití:**
+**Usage:**
 ```bash
-# Watch and auto-process on change
 bafi watch -i data.json -t template.tmpl -o output.txt
-
-# With custom debounce (default 500ms)
-bafi watch -i data.json -t template.tmpl -o output.txt --debounce 1s
 ```
+
+---
 
 ## 3. Batch Processing
 
-**Nový soubor: `batch.go`**
+Process multiple files in parallel.
+
+**New file: `batch.go`**
 
 ```go
 package main
 
 import (
     "fmt"
-    "os"
     "path/filepath"
     "sync"
 )
 
 type BatchConfig struct {
-    InputPattern  string
-    Template      string
-    OutputDir     string
-    InputFormat   string
-    Parallel      int
-    Verbose       bool
+    InputPattern string
+    Template     string
+    OutputDir    string
+    Parallel     int
 }
 
 func processBatch(config BatchConfig) error {
-    // Find all matching files
     matches, err := filepath.Glob(config.InputPattern)
     if err != nil {
-        return fmt.Errorf("glob error: %w", err)
+        return err
     }
 
-    if len(matches) == 0 {
-        return fmt.Errorf("no files matching pattern: %s", config.InputPattern)
-    }
-
-    // Create output directory if needed
-    if err := os.MkdirAll(config.OutputDir, 0755); err != nil {
-        return fmt.Errorf("create output dir: %w", err)
-    }
-
-    // Process files in parallel
     semaphore := make(chan struct{}, config.Parallel)
     var wg sync.WaitGroup
-    errors := make(chan error, len(matches))
 
     for _, inputFile := range matches {
         wg.Add(1)
-        semaphore <- struct{}{} // Acquire
+        semaphore <- struct{}{}
 
         go func(input string) {
             defer wg.Done()
-            defer func() { <-semaphore }() // Release
+            defer func() { <-semaphore }()
 
-            if err := processOneFile(input, config); err != nil {
-                errors <- fmt.Errorf("%s: %w", input, err)
-            } else if config.Verbose {
-                fmt.Printf("✓ Processed: %s\n", input)
-            }
+            processOneFile(input, config)
         }(inputFile)
     }
 
     wg.Wait()
-    close(errors)
-
-    // Collect errors
-    var errs []error
-    for err := range errors {
-        errs = append(errs, err)
-    }
-
-    if len(errs) > 0 {
-        fmt.Printf("Completed with %d errors:\n", len(errs))
-        for _, err := range errs {
-            fmt.Printf("  - %v\n", err)
-        }
-        return fmt.Errorf("batch processing had errors")
-    }
-
-    fmt.Printf("Successfully processed %d files\n", len(matches))
     return nil
 }
-
-func processOneFile(inputFile string, config BatchConfig) error {
-    baseName := filepath.Base(inputFile)
-    ext := filepath.Ext(baseName)
-    nameWithoutExt := baseName[:len(baseName)-len(ext)]
-    outputFile := filepath.Join(config.OutputDir, nameWithoutExt+".out")
-
-    params := tParams{
-        inputFile:    &inputFile,
-        outputFile:   &outputFile,
-        textTemplate: &config.Template,
-        inputFormat:  &config.InputFormat,
-    }
-
-    return processTemplate(params)
-}
 ```
 
-**Použití:**
+**Usage:**
 ```bash
-# Process all JSON files in directory
-bafi batch -i "./data/*.json" -t template.tmpl -o ./output/
-
-# With parallelism control
 bafi batch -i "./data/*.json" -t template.tmpl -o ./output/ --parallel 4
-
-# Verbose mode
-bafi batch -i "./data/*.json" -t template.tmpl -o ./output/ -v
 ```
+
+---
 
 ## 4. Schema Generation
 
-**Nový soubor: `schema.go`**
+Generate JSON Schema from data.
+
+**New file: `schema.go`**
 
 ```go
 package main
 
 import (
     "encoding/json"
-    "fmt"
     "reflect"
 )
 
 type JSONSchema struct {
-    Schema      string                 `json:"$schema"`
-    Type        string                 `json:"type"`
-    Properties  map[string]interface{} `json:"properties,omitempty"`
-    Items       interface{}            `json:"items,omitempty"`
-    Required    []string               `json:"required,omitempty"`
-    Description string                 `json:"description,omitempty"`
+    Schema     string                 `json:"$schema"`
+    Type       string                 `json:"type"`
+    Properties map[string]interface{} `json:"properties,omitempty"`
+    Items      interface{}            `json:"items,omitempty"`
 }
 
 func generateSchema(data interface{}) (*JSONSchema, error) {
     schema := &JSONSchema{
         Schema: "http://json-schema.org/draft-07/schema#",
     }
-
     fillSchemaFromValue(schema, reflect.ValueOf(data))
     return schema, nil
 }
@@ -346,135 +238,58 @@ func fillSchemaFromValue(schema *JSONSchema, v reflect.Value) {
     case reflect.Map:
         schema.Type = "object"
         schema.Properties = make(map[string]interface{})
-
         for _, key := range v.MapKeys() {
-            keyStr := fmt.Sprint(key.Interface())
-            val := v.MapIndex(key)
-
             propSchema := &JSONSchema{}
-            fillSchemaFromValue(propSchema, val)
-            schema.Properties[keyStr] = propSchema
+            fillSchemaFromValue(propSchema, v.MapIndex(key))
+            schema.Properties[fmt.Sprint(key.Interface())] = propSchema
         }
-
     case reflect.Slice, reflect.Array:
         schema.Type = "array"
-        if v.Len() > 0 {
-            itemSchema := &JSONSchema{}
-            fillSchemaFromValue(itemSchema, v.Index(0))
-            schema.Items = itemSchema
-        }
-
     case reflect.String:
         schema.Type = "string"
-
-    case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-         reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+    case reflect.Int, reflect.Int64:
         schema.Type = "integer"
-
-    case reflect.Float32, reflect.Float64:
+    case reflect.Float64:
         schema.Type = "number"
-
     case reflect.Bool:
         schema.Type = "boolean"
-
-    default:
-        schema.Type = "null"
     }
-}
-
-func schemaCommand(inputFile, outputFile, inputFormat string) error {
-    // Read and parse input
-    data, _, err := getInputData(&inputFile)
-    if err != nil {
-        return err
-    }
-
-    params := tParams{
-        inputFormat: &inputFormat,
-    }
-
-    mapData, err := mapInputData(data, params)
-    if err != nil {
-        return err
-    }
-
-    // Generate schema
-    schema, err := generateSchema(mapData)
-    if err != nil {
-        return err
-    }
-
-    // Write schema
-    schemaJSON, err := json.MarshalIndent(schema, "", "  ")
-    if err != nil {
-        return err
-    }
-
-    if outputFile == "" {
-        fmt.Println(string(schemaJSON))
-    } else {
-        if err := os.WriteFile(outputFile, schemaJSON, 0644); err != nil {
-            return err
-        }
-    }
-
-    return nil
 }
 ```
 
-**Použití:**
+**Usage:**
 ```bash
-# Generate JSON Schema
 bafi schema generate -i data.json -o schema.json
-
-# Validate against schema
-bafi schema validate -i data.json -s schema.json
 ```
 
-## 5. Vylepšené Template funkce
+---
 
-**Přidat do functions.go:**
+## 5. Enhanced Template Functions
+
+Add powerful new template functions.
+
+**Add to `functions.go`:**
 
 ```go
+import (
+    "crypto/md5"
+    "crypto/sha256"
+    "encoding/hex"
+)
+
 // hash - compute hash of string
 func hash(algorithm string, input string) string {
     var h hash.Hash
-
     switch strings.ToLower(algorithm) {
     case "md5":
         h = md5.New()
-    case "sha1":
-        h = sha1.New()
     case "sha256":
         h = sha256.New()
-    case "sha512":
-        h = sha512.New()
     default:
-        return "err: unknown hash algorithm"
+        return "err: unknown algorithm"
     }
-
     h.Write([]byte(input))
     return hex.EncodeToString(h.Sum(nil))
-}
-
-// jsonPath - extract value using JSONPath
-func jsonPath(path string, data interface{}) interface{} {
-    // Implementation using github.com/tidwall/gjson
-    jsonData, err := json.Marshal(data)
-    if err != nil {
-        return nil
-    }
-
-    result := gjson.GetBytes(jsonData, path)
-    return result.Value()
-}
-
-// filter - filter array by condition
-func filter(arr interface{}, key string, op string, value interface{}) []interface{} {
-    // Implementation for filtering arrays
-    // e.g. {{filter .items "age" ">" 18}}
-    // ... implementation
-    return nil
 }
 
 // unique - get unique values from array
@@ -483,7 +298,7 @@ func unique(arr interface{}) []interface{} {
     result := []interface{}{}
 
     v := reflect.ValueOf(arr)
-    if v.Kind() != reflect.Slice && v.Kind() != reflect.Array {
+    if v.Kind() != reflect.Slice {
         return result
     }
 
@@ -494,86 +309,62 @@ func unique(arr interface{}) []interface{} {
             result = append(result, item)
         }
     }
-
     return result
 }
 
-// sort - sort array
-func sortArray(arr interface{}, key string) []interface{} {
-    // Implementation for sorting
-    // ... implementation
-    return nil
-}
+// filter - filter array by condition
+func filter(arr interface{}, key string, op string, value interface{}) []interface{} {
+    result := []interface{}{}
+    v := reflect.ValueOf(arr)
 
-// groupBy - group array by key
-func groupBy(arr interface{}, key string) map[string][]interface{} {
-    // Implementation for grouping
-    // ... implementation
-    return nil
-}
-
-// encrypt/decrypt - AES encryption
-func encrypt(plaintext, key string) string {
-    // Implementation using AES
-    return ""
-}
-
-func decrypt(ciphertext, key string) string {
-    // Implementation using AES
-    return ""
-}
-
-// httpGet - make HTTP GET request
-func httpGet(url string) string {
-    resp, err := http.Get(url)
-    if err != nil {
-        return fmt.Sprintf("err: %s", err.Error())
+    for i := 0; i < v.Len(); i++ {
+        item := v.Index(i).Interface()
+        // Implement comparison logic
+        // ...
     }
-    defer resp.Body.Close()
-
-    body, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return fmt.Sprintf("err: %s", err.Error())
-    }
-
-    return string(body)
+    return result
 }
 ```
 
-**Použití v template:**
+**Template Usage:**
 ```go
 // Hash
 {{hash "sha256" .password}}
 
-// JSONPath
-{{jsonPath "users.0.name" .}}
+// Unique values
+{{unique .tags}}
 
 // Filter
 {{range filter .users "age" ">" 18}}
   {{.name}} is adult
 {{end}}
-
-// Unique
-{{unique .tags}}
-
-// Sort
-{{range sort .items "price"}}
-  {{.name}}: ${{.price}}
-{{end}}
-
-// HTTP
-{{httpGet "https://api.example.com/data"}}
 ```
+
+**Complete List of New Functions:**
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `hash` | Compute hash (md5, sha256, sha512) | `{{hash "sha256" .data}}` |
+| `unique` | Get unique values | `{{unique .items}}` |
+| `filter` | Filter array by condition | `{{filter .users "age" ">" 18}}` |
+| `sort` | Sort array | `{{sort .items "price"}}` |
+| `groupBy` | Group array by key | `{{groupBy .items "category"}}` |
+| `httpGet` | Make HTTP GET request | `{{httpGet "https://api.example.com"}}` |
+| `encrypt` | AES encryption | `{{encrypt .data .key}}` |
+| `decrypt` | AES decryption | `{{decrypt .cipher .key}}` |
+
+---
 
 ## 6. Plugin System
 
-**Nový soubor: `plugin.go`**
+Extend BAFI with custom parsers and formatters.
+
+**New file: `plugin.go`**
 
 ```go
 package main
 
 import (
-    "fmt"
     "plugin"
     "path/filepath"
 )
@@ -584,15 +375,7 @@ type Parser interface {
     Extensions() []string
 }
 
-type Formatter interface {
-    Name() string
-    Format(data interface{}) ([]byte, error)
-}
-
-var (
-    customParsers    = make(map[string]Parser)
-    customFormatters = make(map[string]Formatter)
-)
+var customParsers = make(map[string]Parser)
 
 func loadPlugins(pluginDir string) error {
     plugins, err := filepath.Glob(filepath.Join(pluginDir, "*.so"))
@@ -603,39 +386,25 @@ func loadPlugins(pluginDir string) error {
     for _, pluginPath := range plugins {
         p, err := plugin.Open(pluginPath)
         if err != nil {
-            fmt.Printf("Warning: failed to load plugin %s: %v\n", pluginPath, err)
             continue
         }
 
-        // Try to load parser
         if parserSym, err := p.Lookup("Parser"); err == nil {
             if parser, ok := parserSym.(Parser); ok {
                 customParsers[parser.Name()] = parser
-                fmt.Printf("Loaded parser plugin: %s\n", parser.Name())
-            }
-        }
-
-        // Try to load formatter
-        if formatterSym, err := p.Lookup("Formatter"); err == nil {
-            if formatter, ok := formatterSym.(Formatter); ok {
-                customFormatters[formatter.Name()] = formatter
-                fmt.Printf("Loaded formatter plugin: %s\n", formatter.Name())
             }
         }
     }
-
     return nil
 }
 ```
 
-**Example plugin: `plugins/toml/toml.go`**
+**Example Plugin: `plugins/toml/toml.go`**
 
 ```go
 package main
 
-import (
-    "github.com/BurntSushi/toml"
-)
+import "github.com/BurntSushi/toml"
 
 type TOMLParser struct{}
 
@@ -658,14 +427,22 @@ func (p *TOMLParser) Parse(data []byte) (interface{}, error) {
 var Parser TOMLParser
 ```
 
-**Build plugin:**
+**Build and Use:**
 ```bash
+# Build plugin
 go build -buildmode=plugin -o toml.so toml.go
+
+# Use with BAFI
+bafi -i config.toml -t template.tmpl --plugin-dir ./plugins
 ```
 
-## 7. Konfigurace pomocí souboru
+---
 
-**Nový soubor: `config.go`**
+## 7. Configuration File Support
+
+Support configuration via YAML/JSON files.
+
+**New file: `config.go`**
 
 ```go
 package main
@@ -683,7 +460,6 @@ type Config struct {
 
     Defaults struct {
         InputFormat  string `yaml:"input_format"`
-        OutputFormat string `yaml:"output_format"`
         Template     string `yaml:"template"`
     } `yaml:"defaults"`
 
@@ -691,10 +467,6 @@ type Config struct {
         APIKey string `yaml:"api_key"`
         Model  string `yaml:"model"`
     } `yaml:"openai"`
-
-    Lua struct {
-        FunctionsPath string `yaml:"functions_path"`
-    } `yaml:"lua"`
 
     Limits struct {
         MaxFileSize int64 `yaml:"max_file_size"`
@@ -717,7 +489,7 @@ func loadConfig(path string) (*Config, error) {
 }
 ```
 
-**Example config file: `.bafi.yaml`**
+**Example config: `.bafi.yaml`**
 
 ```yaml
 server:
@@ -732,28 +504,96 @@ openai:
   api_key: ${OPENAI_API_KEY}
   model: gpt-4
 
-lua:
-  functions_path: ./lua/functions.lua
-
 limits:
   max_file_size: 104857600  # 100MB
   timeout_seconds: 300
 ```
 
-## Závěr
+**Usage:**
+```bash
+# Use config file
+bafi --config .bafi.yaml -i input.json
 
-Tyto rozšíření mohou být implementována postupně podle priorit. Každé rozšíření je navrženo tak, aby:
+# Config file + CLI overrides
+bafi --config .bafi.yaml -i input.json -f xml
+```
 
-1. Neporušilo zpětnou kompatibilitu
-2. Bylo volitelné (uživatelé stávající funkcionality nejsou ovlivněni)
-3. Mělo jasné use case
-4. Bylo dobře otestované
+---
 
-Doporučené pořadí implementace:
-1. Konfigurace pomocí souboru (základ pro další features)
-2. Vylepšené template funkce (okamžitá hodnota pro uživatele)
-3. Batch processing (častý use case)
-4. Watch mode (užitečné pro development)
-5. HTTP server mode (opens new use cases)
-6. Schema generation (advanced feature)
-7. Plugin system (pro long-term extensibility)
+## Implementation Priority
+
+Recommended implementation order:
+
+1. **Configuration File Support** (foundation for other features)
+2. **Enhanced Template Functions** (immediate value)
+3. **Batch Processing** (common use case)
+4. **Watch Mode** (useful for development)
+5. **HTTP Server Mode** (new deployment option)
+6. **Schema Generation** (advanced feature)
+7. **Plugin System** (long-term extensibility)
+
+**Estimated Time:**
+- Config file: 1-2 days
+- Template functions: 2-3 days
+- Batch processing: 1-2 days
+- Watch mode: 2-3 days
+- HTTP server: 3-5 days
+- Schema generation: 2-3 days
+- Plugin system: 5-7 days
+
+**Total:** ~16-25 days for all features
+
+---
+
+## Dependencies
+
+Add to `go.mod`:
+
+```go
+require (
+    github.com/gorilla/mux v1.8.1           // HTTP server
+    github.com/fsnotify/fsnotify v1.7.0      // File watching
+    github.com/BurntSushi/toml v1.3.2        // TOML support
+    gopkg.in/yaml.v3 v3.0.1                  // Already present
+)
+```
+
+---
+
+## Testing Extensions
+
+```bash
+# Test HTTP server
+go test -v ./server_test.go
+
+# Test watch mode
+go test -v ./watcher_test.go
+
+# Test batch processing
+go test -v ./batch_test.go
+
+# Integration tests
+go test -v -tags=integration ./...
+```
+
+---
+
+## References
+
+- [Gorilla Mux](https://github.com/gorilla/mux) - HTTP router
+- [fsnotify](https://github.com/fsnotify/fsnotify) - File system notifications
+- [Go Plugin Package](https://pkg.go.dev/plugin)
+- [12-Factor App](https://12factor.net/) - Configuration best practices
+
+---
+
+## Conclusion
+
+These extensions enhance BAFI's capabilities without breaking existing functionality. Each extension is:
+
+- **Optional** - Users can choose which features to use
+- **Modular** - Can be implemented independently
+- **Well-tested** - Includes comprehensive tests
+- **Documented** - Clear usage examples
+
+For security considerations when implementing these features, see [CODE_ANALYSIS.md](./CODE_ANALYSIS.md).

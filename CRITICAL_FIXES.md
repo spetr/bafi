@@ -1,18 +1,35 @@
-# Kritické opravy - Implementační příručka
+# Critical Fixes - Implementation Guide
 
-Tento dokument obsahuje konkrétní kód pro opravu kritických problémů nalezených v projektu BAFI.
+This document contains ready-to-use code for fixing critical issues found in the BAFI project.
 
-## 1. Oprava dělení nulou
+## Quick Reference
 
-### functions.go - funkce div()
+| Issue | File | Priority | Estimated Time |
+|-------|------|----------|----------------|
+| Division by zero | functions.go:108,111,139 | 🔴 HIGH | 15 min |
+| Deprecated rand.Seed | main.go:48 | 🟡 MEDIUM | 10 min |
+| Race condition (Lua) | main.go:31, functions.go:518 | 🔴 HIGH | 30 min |
+| API key exposure | main.go:70 | 🔴 HIGH | 15 min |
+| addSubstring bug | functions.go:324-337 | 🟠 MEDIUM | 20 min |
+| mustArray returns nil | functions.go:498 | 🟡 MEDIUM | 5 min |
+| Empty template check | main.go:320 | 🟡 MEDIUM | 10 min |
+| CSV error handling | main.go:274 | 🟢 LOW | 10 min |
 
-**Před:**
+**Total Estimated Time: ~2 hours**
+
+---
+
+## 1. Fix Division by Zero
+
+### functions.go - div() function
+
+**Before:**
 ```go
 // div divide
 func div(a, b interface{}) int64 { return toInt64(a) / toInt64(b) }
 ```
 
-**Po:**
+**After:**
 ```go
 // div divide - returns 0 if divisor is zero
 func div(a, b interface{}) int64 {
@@ -24,15 +41,15 @@ func div(a, b interface{}) int64 {
 }
 ```
 
-### functions.go - funkce mod()
+### functions.go - mod() function
 
-**Před:**
+**Before:**
 ```go
 // mod modulo
 func mod(a, b interface{}) int64 { return toInt64(a) % toInt64(b) }
 ```
 
-**Po:**
+**After:**
 ```go
 // mod modulo - returns 0 if divisor is zero
 func mod(a, b interface{}) int64 {
@@ -44,9 +61,9 @@ func mod(a, b interface{}) int64 {
 }
 ```
 
-### functions.go - funkce divf()
+### functions.go - divf() function
 
-**Před:**
+**Before:**
 ```go
 // divide float
 func divf(a interface{}, v ...interface{}) float64 {
@@ -54,7 +71,7 @@ func divf(a interface{}, v ...interface{}) float64 {
 }
 ```
 
-**Po:**
+**After:**
 ```go
 // divide float
 func divf(a interface{}, v ...interface{}) float64 {
@@ -67,11 +84,13 @@ func divf(a interface{}, v ...interface{}) float64 {
 }
 ```
 
-## 2. Odstranění deprecated rand.Seed
+---
 
-### main.go - funkce init()
+## 2. Remove Deprecated rand.Seed
 
-**Před:**
+### main.go - init() function
+
+**Before:**
 ```go
 func init() {
     rand.Seed(time.Now().UTC().UnixNano())
@@ -84,7 +103,7 @@ func init() {
 }
 ```
 
-**Po:**
+**After:**
 ```go
 func init() {
     // rand.Seed is no longer needed in Go 1.20+
@@ -98,20 +117,9 @@ func init() {
 }
 ```
 
-### functions.go - funkce randInt()
+### functions.go - randInt() function
 
-**Před:**
-```go
-// randInt returns random integer in defined range {{randInt min max}} e.g. {{randInt 1 10}}
-func randInt(min, max int) int {
-    if max <= min {
-        return min
-    }
-    return rand.Intn(max-min+1) + min
-}
-```
-
-**Po (pro Go 1.22+):**
+**For Go 1.22+:**
 ```go
 // randInt returns random integer in defined range {{randInt min max}} e.g. {{randInt 1 10}}
 func randInt(min, max int) int {
@@ -126,7 +134,7 @@ func randInt(min, max int) int {
 }
 ```
 
-**Nebo (pro kompatibilitu s Go 1.20-1.21):**
+**Or for compatibility with Go 1.20-1.21:**
 ```go
 // randInt returns random integer in defined range {{randInt min max}} e.g. {{randInt 1 10}}
 func randInt(min, max int) int {
@@ -138,11 +146,13 @@ func randInt(min, max int) int {
 }
 ```
 
-## 3. Oprava race condition s Lua state
+---
 
-### main.go - globální proměnné a init
+## 3. Fix Race Condition with Lua State
 
-**Před:**
+### main.go - global variables and init
+
+**Before:**
 ```go
 var (
     luaData *lua.LState
@@ -159,8 +169,10 @@ func init() {
 }
 ```
 
-**Po:**
+**After:**
 ```go
+import "sync"
+
 var (
     luaPool *sync.Pool
     luaFile string
@@ -184,9 +196,9 @@ func init() {
 }
 ```
 
-### functions.go - funkce luaF()
+### functions.go - luaF() function
 
-**Před:**
+**Before:**
 ```go
 func luaF(i ...interface{}) string {
     if luaData == nil {
@@ -208,7 +220,7 @@ func luaF(i ...interface{}) string {
 }
 ```
 
-**Po:**
+**After:**
 ```go
 func luaF(i ...interface{}) string {
     if luaPool == nil {
@@ -240,7 +252,7 @@ func luaF(i ...interface{}) string {
 
 ### main.go - main()
 
-**Před:**
+**Before:**
 ```go
 func main() {
     // ... existing code ...
@@ -253,50 +265,78 @@ func main() {
 }
 ```
 
-**Po:**
+**After:**
 ```go
 func main() {
     // ... existing code ...
     if err := processTemplate(params); err != nil {
         log.Fatal(err.Error())
     }
-    // Pool cleanup is handled by GC, but we can clear it explicitly if needed
-    if luaPool != nil {
-        // Note: sync.Pool doesn't need explicit cleanup
-        // Items will be garbage collected when no longer needed
-    }
+    // Pool cleanup is handled by GC
+    // Items will be garbage collected when no longer needed
 }
 ```
 
-## 4. Zabezpečení ChatGPT API klíče
+---
 
-### main.go - tParams a flag parsing
+## 4. Secure ChatGPT API Key
 
-**Před:**
+### main.go - tParams and flag parsing
+
+**Before:**
 ```go
 chatGPTkey: flag.String("gk", "", "OpenAI API key"),
 ```
 
-**Po:**
+**After:**
 ```go
 chatGPTkey: flag.String("gk", os.Getenv("OPENAI_API_KEY"), "OpenAI API key (can also be set via OPENAI_API_KEY env var)"),
 ```
 
-**Doporučené použití:**
+**Recommended Usage:**
 ```bash
-# Místo
+# Instead of:
 bafi -i data.json -t template.tmpl -gk sk-xxxxxxxxxxxxx -gq "What is this?"
 
-# Použít
+# Use:
 export OPENAI_API_KEY=sk-xxxxxxxxxxxxx
 bafi -i data.json -t template.tmpl -gq "What is this?"
 ```
 
-## 5. Oprava addSubstring
+**Additional Security (Optional):**
 
-### functions.go - funkce addSubstring()
+Create a configuration file loader:
 
-**Před:**
+```go
+import "os"
+
+const DefaultConfigPath = ".bafi/config.yaml"
+
+type Config struct {
+    OpenAI struct {
+        APIKey string `yaml:"api_key"`
+    } `yaml:"openai"`
+}
+
+func loadConfig() (*Config, error) {
+    home, err := os.UserHomeDir()
+    if err != nil {
+        return nil, err
+    }
+
+    configPath := filepath.Join(home, DefaultConfigPath)
+    // Load and parse config file
+    // ...
+}
+```
+
+---
+
+## 5. Fix addSubstring
+
+### functions.go - addSubstring() function
+
+**Before:**
 ```go
 func addSubstring(s string, ss string, pos interface{}) string {
     if toInt(pos) >= len(s) || -toInt(pos) >= len(s) {
@@ -308,14 +348,14 @@ func addSubstring(s string, ss string, pos interface{}) string {
     case x > 0:
         return fmt.Sprintf("%s%s%s", s[:len(s)-x], ss, s[len(s)-x:])
     case x < 0:
-        return fmt.Sprintf("%s%s%s", s[:-x], ss, s[-x:])  // CHYBA: neplatná syntax
+        return fmt.Sprintf("%s%s%s", s[:-x], ss, s[-x:])  // ERROR: invalid syntax
     default:
         return "inputError"
     }
 }
 ```
 
-**Po:**
+**After:**
 ```go
 func addSubstring(s string, ss string, pos interface{}) string {
     p := toInt(pos)
@@ -343,11 +383,13 @@ func addSubstring(s string, ss string, pos interface{}) string {
 }
 ```
 
-## 6. Oprava mustArray
+---
 
-### functions.go - funkce mustArray()
+## 6. Fix mustArray
 
-**Před:**
+### functions.go - mustArray() function
+
+**Before:**
 ```go
 func mustArray(v interface{}) []interface{} {
     if v == nil {
@@ -360,7 +402,7 @@ func mustArray(v interface{}) []interface{} {
 }
 ```
 
-**Po:**
+**After:**
 ```go
 func mustArray(v interface{}) []interface{} {
     if v == nil {
@@ -373,11 +415,13 @@ func mustArray(v interface{}) []interface{} {
 }
 ```
 
-## 7. Oprava prázdného template stringu
+---
 
-### main.go - funkce readTemplate()
+## 7. Fix Empty Template Validation
 
-**Před:**
+### main.go - readTemplate() function
+
+**Before:**
 ```go
 func readTemplate(textTemplate string) ([]byte, error) {
     var templateFile []byte
@@ -394,7 +438,7 @@ func readTemplate(textTemplate string) ([]byte, error) {
 }
 ```
 
-**Po:**
+**After:**
 ```go
 func readTemplate(textTemplate string) ([]byte, error) {
     if textTemplate == "" {
@@ -418,11 +462,13 @@ func readTemplate(textTemplate string) ([]byte, error) {
 }
 ```
 
-## 8. Vylepšení CSV error handling
+---
 
-### main.go - mapInputData() pro CSV
+## 8. Improve CSV Error Handling
 
-**Před:**
+### main.go - mapInputData() for CSV
+
+**Before:**
 ```go
 case "csv":
     var mapData []map[string]interface{}
@@ -438,7 +484,7 @@ case "csv":
     mapData = make([]map[string]interface{}, len(lines[1:]))
 ```
 
-**Po:**
+**After:**
 ```go
 case "csv":
     var mapData []map[string]interface{}
@@ -457,36 +503,84 @@ case "csv":
     mapData = make([]map[string]interface{}, len(lines[1:]))
 ```
 
-## Testování oprav
+---
 
-Po implementaci těchto oprav spusťte:
+## Testing the Fixes
+
+After implementing these fixes, run:
 
 ```bash
-# Format kódu
+# Format code
 gofmt -w .
 
-# Spustit testy
+# Run tests
 go test -v ./...
 
-# Spustit go vet
+# Run go vet
 go vet ./...
 
 # Build
 go build -v
 
-# Test s edge cases
-echo '{"a": 10, "b": 0}' | ./bafi -f json -t '?{{div .a .b}}'  # Mělo by vrátit 0, ne panic
+# Test edge cases
+echo '{"a": 10, "b": 0}' | ./bafi -f json -t '?{{div .a .b}}'  # Should return 0, not panic
+
+# Test with race detector
+go test -race ./...
 ```
 
-## Kontrolní seznam
+---
 
-- [ ] Opravit dělení nulou (div, mod, divf)
-- [ ] Odstranit deprecated rand.Seed
-- [ ] Implementovat Lua pool pro thread-safety
-- [ ] Přidat support pro OPENAI_API_KEY env var
-- [ ] Opravit addSubstring
-- [ ] Opravit mustArray
-- [ ] Opravit readTemplate validation
-- [ ] Vylepšit CSV error handling
-- [ ] Spustit všechny testy
-- [ ] Aktualizovat dokumentaci
+## Checklist
+
+After implementing all fixes:
+
+- [ ] Fix division by zero (div, mod, divf)
+- [ ] Remove deprecated rand.Seed
+- [ ] Implement Lua pool for thread-safety
+- [ ] Add support for OPENAI_API_KEY env var
+- [ ] Fix addSubstring
+- [ ] Fix mustArray
+- [ ] Fix readTemplate validation
+- [ ] Improve CSV error handling
+- [ ] Run all tests
+- [ ] Update documentation
+- [ ] Code review
+- [ ] Create release notes
+
+---
+
+## Implementation Order
+
+Recommended order for implementing fixes:
+
+1. **Division by zero** (highest priority, easiest fix)
+2. **mustArray** (simple, quick fix)
+3. **readTemplate** (simple validation)
+4. **CSV error handling** (small change)
+5. **Deprecated rand.Seed** (requires testing)
+6. **addSubstring** (requires careful testing)
+7. **API key** (requires documentation update)
+8. **Lua pool** (most complex, requires thorough testing)
+
+---
+
+## Expected Results
+
+After implementing all fixes:
+
+- ✅ Zero panics in production
+- ✅ Thread-safe Lua execution
+- ✅ Better security for API keys
+- ✅ Improved error messages
+- ✅ More robust edge case handling
+- ✅ No deprecated warnings
+
+---
+
+## References
+
+- [Go Data Race Detector](https://go.dev/doc/articles/race_detector)
+- [Go 1.20 Release Notes](https://go.dev/doc/go1.20)
+- [OWASP Secrets Management](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)
+- [Effective Go](https://go.dev/doc/effective_go)
